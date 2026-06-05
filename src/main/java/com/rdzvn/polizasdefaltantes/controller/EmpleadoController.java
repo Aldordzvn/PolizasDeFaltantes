@@ -54,7 +54,4 @@ public class EmpleadoController {
                 ApiResponse.ok(null, "Producto eliminado correctamente")
         );
     }
-
-
-
 }
