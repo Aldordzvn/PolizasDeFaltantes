@@ -8,28 +8,29 @@ import com.rdzvn.polizasdefaltantes.entity.Inventario;
 import com.rdzvn.polizasdefaltantes.entity.Poliza;
 import com.rdzvn.polizasdefaltantes.excepciones.BusinessException;
 import com.rdzvn.polizasdefaltantes.excepciones.ResourceNotFoundException;
-import com.rdzvn.polizasdefaltantes.repository.EmpleadoRepository;
-import com.rdzvn.polizasdefaltantes.repository.InventarioRepository;
 import com.rdzvn.polizasdefaltantes.repository.PolizaRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 public class PolizaService {
 
     private final PolizaRepository polizaRepository;
-    private final InventarioRepository inventarioRepository;
-    private final EmpleadoRepository empleadoRepository;
+    private final InventarioService inventarioService;
+    private final EmpleadoService empleadoService;
 
-    public PolizaService(PolizaRepository polizaRepository, InventarioRepository inventarioRepository, EmpleadoRepository empleadoRepository) {
+    public PolizaService(PolizaRepository polizaRepository, InventarioService inventarioService, EmpleadoService empleadoService) {
         this.polizaRepository = polizaRepository;
-        this.inventarioRepository = inventarioRepository;
-        this.empleadoRepository = empleadoRepository;
+        this.inventarioService = inventarioService;
+        this.empleadoService = empleadoService;
     }
 
+    @Transactional(readOnly = true)
     public List<PolizaResponse> listarPolizas(){
         return polizaRepository.findAll().stream()
                 .map(PolizaResponse::desde)
@@ -41,30 +42,20 @@ public class PolizaService {
                 .orElseThrow(()-> new ResourceNotFoundException("Poliza no encontrada"));
     }
 
-    public Inventario buscarPorSku(String sku){
-        return inventarioRepository.findBySku(sku)
-                .orElseThrow(()-> new ResourceNotFoundException("El inventario con ese SKU no fue encontrado"));
-    }
-
-    public Empleado buscarPorIdEmpleado(Long id){
-        return empleadoRepository.findById(id)
-                .filter(Empleado::isActivo)
-                .orElseThrow(()-> new ResourceNotFoundException("El empleado con ese ID no fue encontrado"));
-
-    }
-
 
     @Transactional
     public PolizaResponse crearPolizaDesdeRequest(CrearPolizaRequest request){
-        Inventario inventario = buscarPorSku(request.sku());
-        Empleado empleado = buscarPorIdEmpleado(request.idEmpleado());
+        log.info("Iniciando creación de póliza - empleado ID: {}, SKU: {}, cantidad: {}", request.idEmpleado(), request.sku(), request.cantidadFaltante());
+        Inventario inventario = inventarioService.buscarPorSku(request.sku());
+        Empleado empleado = empleadoService.buscarPorId(request.idEmpleado());
 
-        if(inventario.getCantidad() < request.cantidadFaltante()){
-            throw new BusinessException("La cantidad es mayor a la cantidad existente del inventario");
+        try{
+            inventarioService.descontarCantidad(request.sku(), request.cantidadFaltante());
+        }catch (BusinessException e){
+            log.warn("Inventario insuficiente - SKU: {}, solicitando: {}, disponible: {}",
+                    request.sku(), request.cantidadFaltante(), inventario.getCantidad());
+            throw e;
         }
-
-        inventario.setCantidad(inventario.getCantidad() - request.cantidadFaltante());
-        inventarioRepository.save(inventario);
 
         Poliza poliza = new Poliza(
                 empleado,
@@ -72,59 +63,87 @@ public class PolizaService {
                 request.cantidadFaltante()
         );
 
-        return PolizaResponse.desde(polizaRepository.save(poliza));
+        PolizaResponse response = PolizaResponse.desde(polizaRepository.save(poliza));
+
+        log.info("Póliza creada exitosamente — ID: {}, SKU: {}, inventario restante: {}",
+                response.idPoliza(), request.sku(),
+                inventario.getCantidad() - request.cantidadFaltante());
+
+        return response;
 
     }
 
     @Transactional
     public PolizaResponse actualizarPolizaDesdeRequest(Long id, ActualizarPolizaRequest request){
+        log.info("Iniciando actualización de póliza — ID: {}, SKU: {}, nueva cantidad: {}",
+                id, request.sku(), request.cantidadFaltante());
+
         Poliza poliza = buscarPorIdPoliza(id);
-        Inventario inventario = buscarPorSku(request.sku());
-        Empleado empleado = buscarPorIdEmpleado(request.idEmpleado());
+        Empleado empleado = empleadoService.buscarPorId(request.idEmpleado());
         boolean mismoSku = poliza.getInventario().getSku().equals(request.sku());
 
-        if(mismoSku){
-            if(poliza.getCantidadFaltante() > request.cantidadFaltante()){
-                Integer diferencia = poliza.getCantidadFaltante() - request.cantidadFaltante();
-                inventario.setCantidad(inventario.getCantidad() + diferencia);
-            } else if (poliza.getCantidadFaltante() < request.cantidadFaltante()) {
-                Integer diferencia = request.cantidadFaltante() - poliza.getCantidadFaltante();
-                Integer cantidadResultado = inventario.getCantidad() - diferencia;
+        if (mismoSku) {
+            Integer cantidadAnterior = poliza.getCantidadFaltante();
 
-                if (cantidadResultado < 0){
-                    throw new BusinessException(
-                            "Inventario insuficiente para actualizar la poliza"
-                    );
+            if (cantidadAnterior > request.cantidadFaltante()) {
+                Integer diferencia = cantidadAnterior - request.cantidadFaltante();
+                inventarioService.restaurarCantidad(request.sku(), diferencia);
+                log.info("Inventario restaurado parcialmente — SKU: {}, diferencia devuelta: {}",
+                        request.sku(), diferencia);
+
+            } else if (cantidadAnterior < request.cantidadFaltante()) {
+                Integer diferencia = request.cantidadFaltante() - cantidadAnterior;
+                try {
+                    inventarioService.descontarCantidad(request.sku(), diferencia);
+                } catch (BusinessException e) {
+                    log.warn("Inventario insuficiente al actualizar póliza — ID: {}, SKU: {}, diferencia: {}",
+                            id, request.sku(), diferencia);
+                    throw e;
                 }
-                inventario.setCantidad(cantidadResultado);
-            }
-            inventarioRepository.save(inventario);
-        }else {
-            Inventario inventarioAnterior = buscarPorSku(poliza.getInventario().getSku());
-            inventarioAnterior.setCantidad(inventarioAnterior.getCantidad() + poliza.getCantidadFaltante());
-            inventarioRepository.save(inventarioAnterior);
-
-            if (inventario.getCantidad() < request.cantidadFaltante()){
-                throw new BusinessException("Inventario insuficiente para el SKU: " + request.sku());
+                log.info("Inventario descontado parcialmente — SKU: {}, diferencia descontada: {}",
+                        request.sku(), diferencia);
             }
 
-            inventario.setCantidad(inventario.getCantidad() - request.cantidadFaltante());
-            inventarioRepository.save(inventario);
+        } else {
+            String skuAnterior = poliza.getInventario().getSku();
+            inventarioService.restaurarCantidad(skuAnterior, poliza.getCantidadFaltante());
+            log.info("Inventario anterior restaurado — SKU: {}, cantidad restaurada: {}",
+                    skuAnterior, poliza.getCantidadFaltante());
+
+            try {
+                inventarioService.descontarCantidad(request.sku(), request.cantidadFaltante());
+            } catch (BusinessException e) {
+                log.warn("Inventario insuficiente en nuevo SKU — SKU: {}, solicitado: {}",
+                        request.sku(), request.cantidadFaltante());
+                throw e;
+            }
+            log.info("Inventario nuevo descontado — SKU: {}, cantidad descontada: {}",
+                    request.sku(), request.cantidadFaltante());
         }
 
+        Inventario inventarioActualizado = inventarioService.buscarPorSku(request.sku());
         poliza.setEmpleado(empleado);
-        poliza.setInventario(inventario);
+        poliza.setInventario(inventarioActualizado);
         poliza.setCantidadFaltante(request.cantidadFaltante());
-        return PolizaResponse.desde(polizaRepository.save(poliza));
+
+        PolizaResponse response = PolizaResponse.desde(polizaRepository.save(poliza));
+        log.info("Póliza actualizada exitosamente — ID: {}", id);
+
+        return response;
     }
 
     @Transactional
     public void eliminarPoliza(Long id){
+        log.info("Iniciando eliminación de póliza — ID: {}", id);
+
         Poliza poliza = buscarPorIdPoliza(id);
-        Inventario inventario = buscarPorSku(poliza.getInventario().getSku());
-        Integer cantidadRestaurada = inventario.getCantidad() + poliza.getCantidadFaltante();
-        inventario.setCantidad(cantidadRestaurada);
-        inventarioRepository.save(inventario);
+        String sku = poliza.getInventario().getSku();
+        Integer cantidadARestaurar = poliza.getCantidadFaltante();
+
+        inventarioService.restaurarCantidad(sku, cantidadARestaurar);
+        log.info("Inventario restaurado — SKU: {}, cantidad restaurada: {}", sku, cantidadARestaurar);
+
         polizaRepository.delete(poliza);
+        log.info("Póliza eliminada exitosamente — ID: {}", id);
     }
 }

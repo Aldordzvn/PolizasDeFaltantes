@@ -28,6 +28,9 @@ public class Poliza {
     @Column(name = "actualizado_en", nullable = false)
     private LocalDateTime actualizadoEn;
 
+    public Poliza() {
+    }
+
     public Poliza(Empleado empleado, Inventario inventario, Integer cantidadFaltante) {
         this.empleado = empleado;
         this.inventario = inventario;

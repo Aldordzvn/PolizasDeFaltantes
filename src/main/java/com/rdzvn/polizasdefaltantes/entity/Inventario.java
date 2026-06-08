@@ -1,6 +1,7 @@
 package com.rdzvn.polizasdefaltantes.entity;
 
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Min;
 
 import java.time.LocalDateTime;
 
@@ -15,6 +16,7 @@ public class Inventario {
     private String nombre;
 
     @Column(nullable = false)
+    @Min(value = 0, message = "La cantidad no puede ser negativa")
     private Integer cantidad;
 
     @Column(name = "creado_en", updatable = false)

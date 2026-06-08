@@ -14,9 +14,11 @@ import java.util.List;
 public interface EmpleadoRepository extends JpaRepository<Empleado, Long> {
     List<Empleado> findByActivoTrue();
 
+    String DESACTIVAR_QUERY = "UPDATE Empleado e SET e.activo = false WHERE e.idEmpleado = :id";
+
     // Soft delete — marca como inactivo en vez de borrar
     @Modifying
-    @Query("UPDATE Empleado e SET e.activo = false WHERE e.idEmpleado = :id")
+    @Query(DESACTIVAR_QUERY)
     Long desactivar(@Param("id") Long id);
 
 }
