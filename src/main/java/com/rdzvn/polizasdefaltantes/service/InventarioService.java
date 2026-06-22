@@ -63,5 +63,21 @@ public class InventarioService {
         inventarioRepository.delete(inventario);
     }
 
+    public void descontarCantidad(String sku, Integer cantidad) {
+        Inventario inventario = buscarPorSku(sku);
+        if (inventario.getCantidad() < cantidad) {
+            throw new BusinessException("Inventario insuficiente para SKU: " + sku);
+        }
+        inventario.setCantidad(inventario.getCantidad() - cantidad);
+        inventarioRepository.save(inventario);
+    }
+
+    public void restaurarCantidad(String sku, Integer cantidad) {
+        Inventario inventario = buscarPorSku(sku);
+        inventario.setCantidad(inventario.getCantidad() + cantidad);
+        inventarioRepository.save(inventario);
+    }
+
+
 
 }
